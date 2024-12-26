@@ -18,7 +18,7 @@ from ruyi.utils.utils import get_image_to_video_latent, save_videos_grid
 
 # Input and output
 start_image_path    = "/content/drive/My Drive/InputImages/Umbrella.jpg"
-end_image_path      = "None" # Can be None for start-image-to-video
+end_image_path      = None # Can be None for start-image-to-video
 output_video_path   = "/content/drive/My Drive/GeneratedVideos/Umbrella_example_01.mp4"
 
 # Video settings
