@@ -17,16 +17,16 @@ from ruyi.utils.lora_utils import merge_lora, unmerge_lora
 from ruyi.utils.utils import get_image_to_video_latent, save_videos_grid
 
 # Input and output
-start_image_path    = "assets/girl_01.jpg"
-end_image_path      = "assets/girl_02.jpg" # Can be None for start-image-to-video
-output_video_path   = "outputs/example_01.mp4"
+start_image_path    = "/content/drive/My Drive/InputImages/Umbrella.jpg"
+end_image_path      = "None" # Can be None for start-image-to-video
+output_video_path   = "/content/drive/My Drive/GeneratedVideos/Umbrella_example_01.mp4"
 
 # Video settings
 video_length        = 120       # The max video length is 120 frames (24 frames per second)
 base_resolution     = 512       # # The pixels in the generated video are approximately 512 x 512. Values in the range of [384, 896] typically produce good video quality.
 video_size          = None      # Override base_resolution. Format: [height, width], e.g., [384, 672]
 # Control settings
-aspect_ratio        = "16:9"    # Do not change, currently "16:9" works better
+aspect_ratio        = "1:1"    # Do not change, currently "16:9" works better
 motion              = "auto"    # Motion control, choose in ["1", "2", "3", "4", "auto"]
 camera_direction    = "auto"    # Camera control, choose in ["static", "left", "right", "up", "down", "auto"]
 # Sampler settings
