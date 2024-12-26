@@ -1,3 +1,5 @@
+# Added Colab Notebook .ipynb file to use images on Google Drive
+
 # Ruyi-Models
 
 English | [简体中文](./README_CN.md)
