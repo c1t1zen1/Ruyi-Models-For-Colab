@@ -17,7 +17,7 @@ from ruyi.utils.lora_utils import merge_lora, unmerge_lora
 from ruyi.utils.utils import get_image_to_video_latent, save_videos_grid
 
 # Input and output
-start_image_path    = "/content/drive/My Drive/InputImages/Umbrella.jpg"
+start_image_path    = "/content/drive/My Drive/InputImages/Umbrella.png"
 end_image_path      = None # Can be None for start-image-to-video
 output_video_path   = "/content/drive/My Drive/GeneratedVideos/Umbrella_example_01.mp4"
 
