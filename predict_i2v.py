@@ -26,7 +26,7 @@ video_length        = 120       # The max video length is 120 frames (24 frames 
 base_resolution     = 512       # # The pixels in the generated video are approximately 512 x 512. Values in the range of [384, 896] typically produce good video quality.
 video_size          = None      # Override base_resolution. Format: [height, width], e.g., [384, 672]
 # Control settings
-aspect_ratio        = "1:1"    # Do not change, currently "16:9" works better
+aspect_ratio        = "16:9"    # Do not change, currently "16:9" works better
 motion              = "auto"    # Motion control, choose in ["1", "2", "3", "4", "auto"]
 camera_direction    = "auto"    # Camera control, choose in ["static", "left", "right", "up", "down", "auto"]
 # Sampler settings
@@ -36,7 +36,7 @@ scheduler_name      = "DDIM"    # Choose in ["Euler", "Euler A", "DPM++", "PNDM"
 
 # GPU memory settings
 low_gpu_memory_mode = False     # Low gpu memory mode
-gpu_offload_steps   = 10         # Choose in [0, 10, 7, 5, 1], the latter number requires less GPU memory but longer time
+gpu_offload_steps   = 0         # Choose in [0, 10, 7, 5, 1], the latter number requires less GPU memory but longer time
 
 # Random seed
 seed                = 42        # The Answer to the Ultimate Question of Life, The Universe, and Everything
