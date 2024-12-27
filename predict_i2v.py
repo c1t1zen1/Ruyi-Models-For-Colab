@@ -36,7 +36,7 @@ scheduler_name      = "DDIM"    # Choose in ["Euler", "Euler A", "DPM++", "PNDM"
 
 # GPU memory settings
 low_gpu_memory_mode = False     # Low gpu memory mode
-gpu_offload_steps   = 0         # Choose in [0, 10, 7, 5, 1], the latter number requires less GPU memory but longer time
+gpu_offload_steps   = 10         # Choose in [0, 10, 7, 5, 1], the latter number requires less GPU memory but longer time
 
 # Random seed
 seed                = 42        # The Answer to the Ultimate Question of Life, The Universe, and Everything
