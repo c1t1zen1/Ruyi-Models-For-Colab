@@ -17,9 +17,9 @@ from ruyi.utils.lora_utils import merge_lora, unmerge_lora
 from ruyi.utils.utils import get_image_to_video_latent, save_videos_grid
 
 # Input and output
-start_image_path    = "/content/drive/My Drive/InputImages/Obsidian.png"
+start_image_path    = "/content/drive/My Drive/InputImages/Obsidian2.png"
 end_image_path      = None # Can be None for start-image-to-video
-output_video_path   = "/content/drive/My Drive/GeneratedVideos/Obsidian_example_01.mp4"
+output_video_path   = "/content/drive/My Drive/GeneratedVideos/Obsidian_example_02.mp4"
 
 # Video settings
 video_length        = 120       # The max video length is 120 frames (24 frames per second)
