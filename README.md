@@ -1,8 +1,3 @@
-**New**:
-FP8 added for ComfyUI node.
-   GPU memory decreases depending on the modes: bf16 default > fp8 lite > fp8 strong  > fp8 extreme
-  
------------------
 # Ruyi-Models
 
 English | [简体中文](./README_CN.md)
@@ -10,6 +5,12 @@ English | [简体中文](./README_CN.md)
 Welcome to Ruyi-Models!
 
 Ruyi is an image-to-video model capable of generating cinematic-quality videos at a **resolution of 768**, with a frame rate of **24 frames per second**, totaling **5 seconds and 120 frames**. It supports **lens control** and **motion amplitude control**. Using a **RTX 3090 or RTX 4090**, you can generate 512 resolution, 120 frames (or 768 resolution, ~72 frames) videos **without any loss of quality**.
+
+## News
+
+- Jan 6, 2025: FP8 added for ComfyUI node. GPU memory decreases depending on the modes: bf16 default > fp8 lite > fp8 strong  > fp8 extreme.
+
+- Dec 24, 2024: The diffusion model is updated to fix the black lines when creating 3:4 or 4:5 videos.
 
 ## Table of Contents
 
