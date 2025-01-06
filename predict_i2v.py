@@ -49,6 +49,10 @@ model_path          = f"models/{model_name}"    # (Down)load mode in this path
 auto_download       = True                      # Automatically download the model if the pipeline creation fails
 auto_update         = True                      # If auto_download is enabled, check for updates and update the model if necessary
 
+# FP8 settings
+fp8_quant_mode      = "none"    # Choose in ["none", "lite", "strong", "extreme"]. GPU memory decreases depending on the modes: bf16 default > fp8 lite > fp8 strong > fp8 extreme.
+fp8_data_type       = "auto"    # Choose in ["auto", "fp8_e5m2", "fp8_e4m3fn"]. The "extreme" mode with "fp8_e5m2" is not recommended for achieving good quality.
+
 # LoRA settings
 lora_path           = None
 lora_weight         = 1.0
@@ -93,7 +97,7 @@ def get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction):
     }
 
 
-def try_setup_pipeline(model_path, weight_dtype, config):
+def try_setup_pipeline(model_path, weight_dtype, config, fp8_quant_mode, fp8_data_type):
     try:
         # Get Vae
         vae = AutoencoderKLMagvit.from_pretrained(
@@ -110,6 +114,30 @@ def try_setup_pipeline(model_path, weight_dtype, config):
             transformer_additional_kwargs=transformer_additional_kwargs
         ).to(weight_dtype)
         print("Transformer loaded ...")
+
+        # Transformer to fp8
+        if fp8_quant_mode != 'none':
+            count_f8 =0
+            fp8_type = torch.float8_e5m2 if fp8_data_type == 'fp8_e5m2' else torch.float8_e4m3fn
+            if fp8_quant_mode != 'extreme':
+
+                shape_size = 2816 ** 2
+                if fp8_quant_mode == 'strong': shape_size -= 1
+
+                for module in transformer.modules():
+                    if module.__class__.__name__ in ["Linear"]:
+                        x,y = module.weight.shape
+                        if x * y > shape_size:
+                            module.to(fp8_type)
+                            count_f8 += 1
+            else:
+                for module in transformer.modules():
+                    if len(list(module.modules())) == 1 and list(module.named_parameters()):
+                        if module.__class__.__name__ not in ["Embedding", 'LayerNorm', 'Conv2d', 'NonDynamicallyQuantizableLinear']:
+                            module.to(fp8_type)
+                            count_f8 += 1
+
+            print (f'FP8: {count_f8} layers converted to {fp8_type}')
 
         # Load Clip
         clip_image_encoder = CLIPVisionModelWithProjection.from_pretrained(
@@ -162,14 +190,14 @@ if auto_download and auto_update:
     snapshot_download(repo_id=repo_id, local_dir=model_path)
 
 # Init model
-pipeline = try_setup_pipeline(model_path, weight_dtype, config)
+pipeline = try_setup_pipeline(model_path, weight_dtype, config, fp8_quant_mode, fp8_data_type)
 if pipeline is None and auto_download:
     print(f"Downloading {model_name} ...")
 
     # Download the model
     snapshot_download(repo_id=repo_id, local_dir=model_path)
 
-    pipeline = try_setup_pipeline(model_path, weight_dtype, config)
+    pipeline = try_setup_pipeline(model_path, weight_dtype, config, fp8_quant_mode, fp8_data_type)
 
 if pipeline is None:
     message = (f"[Load Model Failed] "
@@ -222,7 +250,7 @@ generator= torch.Generator(device).manual_seed(seed)
 # Load control embeddings
 embeddings = get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction)
 
-with torch.no_grad():
+with torch.no_grad(), torch.autocast(str(device), dtype = pipeline.transformer.dtype):
     video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
     input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
 
