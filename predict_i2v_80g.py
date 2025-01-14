@@ -61,6 +61,19 @@ lora_weight         = 1.0
 weight_dtype = torch.bfloat16
 device = torch.device("cuda")
 
+# TeaCache settings
+tea_cache_enabled                  = False
+tea_cache_threshold                = 0.10   # A smaller threshold results in fewer cached steps. 0.10 caches 6 ~ 8 steps, 0.15 caches 10 ~ 12 steps normally.
+tea_cache_skip_start_steps         = 3      # First n steps do not use TeaCache, should be >= 1
+tea_cache_skip_end_steps           = 1      # Last n steps do not use TeaCache, should be >= 1
+tea_cache_offload_cpu              = False  # Offload TeaCache tensors to cpu, which could save some GPU memory
+
+# Enhance-A-Video settings
+enhance_a_video_enabled            = False
+enhance_a_video_weight             = 1.0    # Should be smaller than 10. For smaller video length and lower resolution, should be smaller than 5.
+enhance_a_video_skip_start_steps   = 0      # First n steps do not use Enhance-A-Video, should be >= 0
+enhance_a_video_skip_end_steps     = 0      # Last n steps do not use Enhance-A-Video, should be >= 0
+
 
 def get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction):
     # Default keys
@@ -250,6 +263,13 @@ generator= torch.Generator(device).manual_seed(seed)
 # Load control embeddings
 embeddings = get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction)
 
+# Initialize TeaCache
+pipeline.transformer.tea_cache.initialize(tea_cache_enabled, tea_cache_threshold, tea_cache_skip_start_steps, tea_cache_skip_end_steps, steps, tea_cache_offload_cpu)
+
+# Initialize Enhance-A-Video
+pipeline.transformer.enhance_a_video.initialize(enhance_a_video_enabled, enhance_a_video_weight, enhance_a_video_skip_start_steps, enhance_a_video_skip_end_steps, steps)
+
+# Generate video
 with torch.no_grad(), torch.autocast(str(device), dtype = pipeline.transformer.dtype):
     video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
     input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
@@ -282,6 +302,10 @@ with torch.no_grad(), torch.autocast(str(device), dtype = pipeline.transformer.d
 
     for _lora_path, _lora_weight in zip(loras.get("models", []), loras.get("weights", [])):
         pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight)
+
+# Log information
+if tea_cache_enabled:
+    print("TeaCache cached steps:", pipeline.transformer.tea_cache.skip_count)
 
 # Save the video
 output_folder = os.path.dirname(output_video_path)

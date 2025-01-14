@@ -8,6 +8,8 @@ Ruyi is an image-to-video model capable of generating cinematic-quality videos a
 
 ## News
 
+- Jan 14, 2025: [TeaCache](https://github.com/ali-vilab/TeaCache) and [Enhance-A-Video](https://github.com/NUS-HPC-AI-Lab/Enhance-A-Video) have been added as nodes for ComfyUI, offering faster generation speeds and improved video quality. Simply link these nodes before the sampler node to use them.
+
 - Jan 6, 2025: FP8 added for ComfyUI node. GPU memory decreases depending on the modes: bf16 default > fp8 lite > fp8 strong  > fp8 extreme.
 
 - Dec 24, 2024: The diffusion model is updated to fix the black lines when creating 3:4 or 4:5 videos.

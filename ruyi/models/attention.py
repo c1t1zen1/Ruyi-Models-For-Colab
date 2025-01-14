@@ -39,6 +39,7 @@ from torch import nn
 
 from .motion_module import PositionalEncoding, get_motion_module
 from .norm import FP32LayerNorm, AdaLayerNormShift
+from .attention_processor import HunyuanAttnProcessor2_0_EnhanceAVideo
 
 if is_xformers_available():
     import xformers
@@ -1438,7 +1439,7 @@ class HunyuanDiTBlock(nn.Module):
             qk_norm="layer_norm" if qk_norm else None,
             eps=1e-6,
             bias=True,
-            processor=HunyuanAttnProcessor2_0(),
+            processor=HunyuanAttnProcessor2_0_EnhanceAVideo(),
         )
 
         # 2. Cross-Attn
@@ -1549,6 +1550,10 @@ class HunyuanDiTBlock(nn.Module):
         height: int = 32,
         width: int = 32,
         clip_encoder_hidden_states: Optional[torch.Tensor] = None,
+        # ========== Enhance-A-Video ==========
+        enhance_a_video_enabled: bool = False,
+        enhance_a_video_weight: float = 0.0,
+        # ========== Enhance-A-Video ==========
     ) -> torch.Tensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Long Skip Connection
@@ -1577,6 +1582,11 @@ class HunyuanDiTBlock(nn.Module):
             attn_output = self.attn1(
                 norm_hidden_states_1,
                 image_rotary_emb=attn1_image_rotary_emb,
+                # ========== Enhance-A-Video ==========
+                enhance_a_video_enabled=enhance_a_video_enabled,
+                enhance_a_video_weight=enhance_a_video_weight,
+                num_frames=num_frames,
+                # ========== Enhance-A-Video ==========
             )
             attn_output = rearrange(attn_output, "(b f) (p d) c -> b (f p) d c", p = 2, f = num_frames // 2)
 
@@ -1586,6 +1596,11 @@ class HunyuanDiTBlock(nn.Module):
             attn_output_2 = self.attn1(
                 norm_hidden_states_2,
                 image_rotary_emb=attn1_image_rotary_emb,
+                # ========== Enhance-A-Video ==========
+                enhance_a_video_enabled=enhance_a_video_enabled,
+                enhance_a_video_weight=enhance_a_video_weight,
+                num_frames=num_frames,
+                # ========== Enhance-A-Video ==========
             )
             attn_output_2 = rearrange(attn_output_2, "(b f) (p d) c -> b (f p) d c", p = 2, f = local_attention_frames_num)
             attn_output[:, 1:-1] = (attn_output[:, 1:-1] + attn_output_2) / 2
@@ -1595,6 +1610,11 @@ class HunyuanDiTBlock(nn.Module):
             attn_output = self.attn1(
                 norm_hidden_states,
                 image_rotary_emb=image_rotary_emb,
+                # ========== Enhance-A-Video ==========
+                enhance_a_video_enabled=enhance_a_video_enabled,
+                enhance_a_video_weight=enhance_a_video_weight,
+                num_frames=num_frames,
+                # ========== Enhance-A-Video ==========
             )
         hidden_states = hidden_states + attn_output
 

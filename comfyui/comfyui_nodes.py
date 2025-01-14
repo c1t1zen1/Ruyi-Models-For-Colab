@@ -214,6 +214,7 @@ class Ruyi_LoadModel:
             'model_type': model_type,
             'loras': [],
             'strength_model': [],
+            'plugins': {}
         }
         return (ruyi_model,)
 
@@ -243,10 +244,101 @@ class Ruyi_LoadLora:
                     'model_type': ruyi_model["model_type"],
                     'loras': ruyi_model.get("loras", []) + [folder_paths.get_full_path("loras", lora_name)],
                     'strength_model': ruyi_model.get("strength_model", []) + [strength_model],
+                    'plugins': ruyi_model["plugins"],
                 }, 
             )
         else:
             return (ruyi_model,)
+
+
+class Ruyi_TeaCache:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "ruyi_model": ("RUYI_MODEL",),
+                "enable": ("BOOLEAN", {"default": True, "tooltip": "Enable TeaCache."}),
+                "threshold": (
+                    "FLOAT", 
+                    {
+                        "default": 0.10, "min": 0.0, "max": 0.50, "step": 0.01, 
+                        "tooltip": "TeaCache threshold. 0.10 caches 6 ~ 8 steps, 0.15 caches 10 ~ 12 steps normally."
+                    }
+                ),
+                "skip_start_steps": ("INT", {"default": 3, "min": 1, "step": 1, "tooltip": "First n steps do not use TeaCache."}),
+                "skip_end_steps": ("INT", {"default": 1, "min": 1, "step": 1, "tooltip": "Last n steps do not use TeaCache."}),
+                "offload_cpu": ("BOOLEAN", {"default": True, "Tooltip": "Offload TeaCache tensors to cpu to save GPU memory."}),
+            }
+        }
+    RETURN_TYPES = ("RUYI_MODEL",)
+    RETURN_NAMES = ("ruyi_model",)
+    FUNCTION = "tea_cache"
+    CATEGORY = "Ruyi"
+
+    def tea_cache(self, ruyi_model, enable, threshold, skip_start_steps, skip_end_steps, offload_cpu):
+        tea_cache_parameters = {
+            "enable": enable,
+            "threshold": threshold,
+            "skip_start_steps": skip_start_steps,
+            "skip_end_steps": skip_end_steps,
+            "offload_cpu": offload_cpu
+        }
+
+        return (
+            {
+                'pipeline': ruyi_model["pipeline"], 
+                'dtype': ruyi_model["dtype"],
+                'model_path': ruyi_model["model_path"],
+                'model_type': ruyi_model["model_type"],
+                'loras': ruyi_model["loras"],
+                'strength_model': ruyi_model["strength_model"],
+                'plugins': {"tea_cache": tea_cache_parameters} | ruyi_model["plugins"],
+            }, 
+        )
+
+
+class Ruyi_EnhanceAVideo:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "ruyi_model": ("RUYI_MODEL",),
+                "enable": ("BOOLEAN", {"default": True, "tooltip": "Enable Enhance-A-Video."}),
+                "weight": (
+                    "FLOAT", 
+                    {
+                        "default": 1.0, "min": 0, "max": 100, 
+                        "tooltip": "The weight of Enhance-A-Video. Should be smaller than 5 or 10 to get better results."
+                    }
+                ),
+                "skip_start_steps": ("INT", {"default": 0, "min": 0, "step": 1, "tooltip": "First n steps do not use Enhance-A-Video."}),
+                "skip_end_steps": ("INT", {"default": 0, "min": 0, "step": 1, "tooltip": "First n steps do not use Enhance-A-Video."})
+            }
+        }
+    RETURN_TYPES = ("RUYI_MODEL",)
+    RETURN_NAMES = ("ruyi_model",)
+    FUNCTION = "enhance_a_video"
+    CATEGORY = "Ruyi"
+
+    def enhance_a_video(self, ruyi_model, enable, weight, skip_start_steps, skip_end_steps):
+        enhance_a_video_parameters = {
+            "enable": enable,
+            "weight": weight,
+            "skip_start_steps": skip_start_steps,
+            "skip_end_steps": skip_end_steps,
+        }
+
+        return (
+            {
+                'pipeline': ruyi_model["pipeline"], 
+                'dtype': ruyi_model["dtype"],
+                'model_path': ruyi_model["model_path"],
+                'model_type': ruyi_model["model_type"],
+                'loras': ruyi_model["loras"],
+                'strength_model': ruyi_model["strength_model"],
+                'plugins': {"enhance_a_video": enhance_a_video_parameters} | ruyi_model["plugins"],
+            }, 
+        )
 
 
 class Ruyi_I2VSampler:
@@ -379,6 +471,34 @@ class Ruyi_I2VSampler:
         
         return noise_scheduler
 
+    def initialize_plugins(self, pipeline, parameters, num_steps):
+        # TeaCache
+        if "tea_cache" in parameters:
+            tea_cache_parameters = parameters["tea_cache"]
+            pipeline.transformer.tea_cache.initialize(
+                tea_cache_parameters["enable"],
+                tea_cache_parameters["threshold"],
+                tea_cache_parameters["skip_start_steps"],
+                tea_cache_parameters["skip_end_steps"],
+                num_steps,
+                tea_cache_parameters["offload_cpu"],
+            )
+        else:
+            pipeline.transformer.tea_cache.disable()
+        
+        # Enhance-A-Video
+        if "enhance_a_video" in parameters:
+            enhance_a_video_parameters = parameters["enhance_a_video"]
+            pipeline.transformer.enhance_a_video.initialize(
+                enhance_a_video_parameters["enable"],
+                enhance_a_video_parameters["weight"],
+                enhance_a_video_parameters["skip_start_steps"],
+                enhance_a_video_parameters["skip_end_steps"],
+                num_steps,
+            )
+        else:
+            pipeline.transformer.enhance_a_video.disable()
+
     def process(
             self, ruyi_model, video_length, base_resolution, seed, steps, cfg, scheduler, 
             motion, camera_direction, GPU_memory_mode, GPU_offload_steps,
@@ -424,6 +544,10 @@ class Ruyi_I2VSampler:
         # Load control embeddings
         embeddings = self.get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction)
 
+        # Initialize plugins
+        plugin_parameters = ruyi_model["plugins"]
+        self.initialize_plugins(pipeline, plugin_parameters, steps)
+
         # Inference
         with torch.no_grad(), torch.autocast(str(device), dtype = pipeline.transformer.dtype):
             video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
@@ -466,11 +590,15 @@ class Ruyi_I2VSampler:
 NODE_CLASS_MAPPINGS = {
     "Ruyi_LoadModel": Ruyi_LoadModel,
     "Ruyi_LoadLora": Ruyi_LoadLora,
+    "Ruyi_TeaCache": Ruyi_TeaCache,
+    "Ruyi_EnhanceAVideo": Ruyi_EnhanceAVideo,
     "Ruyi_I2VSampler": Ruyi_I2VSampler,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Ruyi_LoadModel": "Load Model",
     "Ruyi_LoadLora": "Load LoRA",
+    "Ruyi_TeaCache": "TeaCache for Ruyi",
+    "Ruyi_EnhanceAVideo": "Enhance-A-Video for Ruyi",
     "Ruyi_I2VSampler": "Sampler for Image to Video",
 }
