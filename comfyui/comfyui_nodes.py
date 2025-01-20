@@ -549,7 +549,7 @@ class Ruyi_I2VSampler:
         self.initialize_plugins(pipeline, plugin_parameters, steps)
 
         # Inference
-        with torch.no_grad(), torch.autocast(str(device), dtype = pipeline.transformer.dtype):
+        with torch.no_grad(), torch.autocast(device_type=device.type, dtype=pipeline.transformer.dtype):
             video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
             input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
 
@@ -583,6 +583,10 @@ class Ruyi_I2VSampler:
 
             for _lora_path, _lora_weight in zip(ruyi_model.get("loras", []), ruyi_model.get("strength_model", [])):
                 pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight)
+        
+        # Log information
+        if pipeline.transformer.tea_cache.enabled:
+            print("TeaCache cached steps:", pipeline.transformer.tea_cache.skip_count)
 
         return (videos,)
 

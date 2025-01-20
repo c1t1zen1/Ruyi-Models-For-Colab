@@ -270,7 +270,7 @@ pipeline.transformer.tea_cache.initialize(tea_cache_enabled, tea_cache_threshold
 pipeline.transformer.enhance_a_video.initialize(enhance_a_video_enabled, enhance_a_video_weight, enhance_a_video_skip_start_steps, enhance_a_video_skip_end_steps, steps)
 
 # Generate video
-with torch.no_grad(), torch.autocast(str(device), dtype = pipeline.transformer.dtype):
+with torch.no_grad(), torch.autocast(device_type=device.type, dtype=pipeline.transformer.dtype):
     video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
     input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
 
