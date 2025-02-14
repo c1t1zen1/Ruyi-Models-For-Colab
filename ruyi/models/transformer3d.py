@@ -962,6 +962,194 @@ class HunyuanTransformer3DModel(ModelMixin, ConfigMixin):
 
         self.gradient_checkpointing = False
         self.hidden_cache_size = 0
+
+        # plugins
+        self.tea_cache = HunyuanTransformer3DModel.TeaCacheParameters()
+        self.enhance_a_video = HunyuanTransformer3DModel.EnhanceAVideoParameters()
+    
+    class TeaCacheParameters():
+        coefficients = [-7.51185620e+03, 2.32931511e+03, -2.25610663e+02, 9.39902237e+00, -7.43067848e-02]
+
+        def __init__(self):
+            # basic
+            self.enabled = False
+            self.rel_l1_threshold = 0.0
+            self.skip_start_steps = 1
+            self.skip_end_steps = 1
+
+            # count
+            self.count = 0
+            self.skip_count = 0
+            
+            # internal
+            self.num_steps = 0
+            self.accumulated_rel_l1_distance = 0
+            self.previous_modulated_input = None
+            self.previous_residual = None
+            self.should_calculate = False
+            self.hidden_states_input = None
+
+            # offload to cpu
+            self.offload_cpu = False
+
+            # rescale func
+            self.rescale_func = np.poly1d(self.coefficients)
+        
+        def initialize(self, is_enabled, threshold, skip_start_steps, skip_end_steps, num_steps, offload_cpu=True):
+            self.enabled = is_enabled
+            self.rel_l1_threshold = threshold
+            self.skip_start_steps = max(1, skip_start_steps)
+            self.skip_end_steps = max(1, skip_end_steps)
+
+            self.count = 0
+            self.skip_count = 0
+            
+            self.num_steps = num_steps
+            self.accumulated_rel_l1_distance = 0
+            self.previous_modulated_input = None
+            self.previous_residual = None
+            self.should_calculate = False
+            self.hidden_states_input = None
+
+            self.offload_cpu = offload_cpu
+        
+        def disable(self):
+            self.enabled = False
+        
+        def clean(self):
+            self.previous_modulated_input = None
+            self.previous_residual = None
+            self.hidden_states_input = None
+        
+        def update(self, blocks_first, temb, hidden_states, video_length, height, width):
+            if self.count < self.skip_start_steps - 1:
+                # skip start steps
+                self.should_calculate = True
+
+            elif self.count == self.skip_start_steps - 1:
+                # start TeaCache in next step
+                self.should_calculate = True
+                self.accumulated_rel_l1_distance = 0
+
+                tea_cache_modulated_inp = self.compute_timestep_modulated_input(blocks_first, temb, hidden_states, video_length, height, width)
+                self.store_previouse_modulated_input(tea_cache_modulated_inp)
+                self.store_hidden_states_input(hidden_states)
+
+            elif self.count < self.num_steps - self.skip_end_steps:
+                # using TeaCache
+                tea_cache_modulated_inp = self.compute_timestep_modulated_input(blocks_first, temb, hidden_states, video_length, height, width)
+                self.accumulated_rel_l1_distance += self.compute_timestep_modulated_input_rel_l1_distance(tea_cache_modulated_inp)
+                if self.accumulated_rel_l1_distance < self.rel_l1_threshold:
+                    self.should_calculate = False
+                else:
+                    self.should_calculate = True
+                    self.accumulated_rel_l1_distance = 0
+
+                    self.store_previouse_modulated_input(tea_cache_modulated_inp)
+                    self.store_hidden_states_input(hidden_states.clone())
+
+            else:
+                # skip end steps
+                self.should_calculate = True
+
+            # Update step count
+            self.count += 1
+            if self.count == self.num_steps:
+                self.count = 0
+                self.clean()
+        
+        def compute_timestep_modulated_input(self, blocks_first, temb, hidden_states, video_length, height, width):
+            # Compute timestep embedding modulated input
+            tea_cache_temb = temb.clone()
+            tea_cache_inp = hidden_states.clone()
+
+            if video_length != 1:
+                # add time embedding
+                tea_cache_inp = rearrange(tea_cache_inp, "b (f d) c -> (b d) f c", f=video_length)
+                if blocks_first.t_embed is not None:
+                    tea_cache_inp = blocks_first.t_embed(tea_cache_inp)
+                tea_cache_inp = rearrange(tea_cache_inp, "(b d) f c -> b (f d) c", d=height * width)
+
+            tea_cache_modulated_inp = blocks_first.norm1(tea_cache_inp, tea_cache_temb)
+            return tea_cache_modulated_inp
+        
+        def compute_timestep_modulated_input_rel_l1_distance(self, current_modulated_inp):
+            if self.offload_cpu:
+                device = current_modulated_inp.device
+                previous_modulated_input = self.previous_modulated_input.to(device)
+            else:
+                previous_modulated_input = self.previous_modulated_input
+
+            return self.rescale_func(((current_modulated_inp - previous_modulated_input).abs().mean() / previous_modulated_input.abs().mean()).cpu().item())
+
+        def store_previouse_modulated_input(self, timestep_modulated_input):
+            if self.offload_cpu:
+                self.previous_modulated_input = timestep_modulated_input.cpu()
+            else:
+                self.previous_modulated_input = timestep_modulated_input
+
+        def should_update_residual(self):
+            return self.enabled and self.should_calculate and self.hidden_states_input is not None
+
+        def store_hidden_states_input(self, hidden_states):
+            if self.offload_cpu:
+                self.hidden_states_input = hidden_states.cpu()
+            else:
+                self.hidden_states_input = hidden_states
+        
+        def update_residual(self, hidden_states):
+            if self.offload_cpu:
+                self.previous_residual = hidden_states - self.hidden_states_input.to(hidden_states.device)
+                self.previous_residual = self.previous_residual.cpu()
+            else:
+                self.previous_residual = hidden_states - self.hidden_states_input
+            self.hidden_states_input = None
+        
+        def should_use_cached_residual(self):
+            return self.enabled and not self.should_calculate
+        
+        def apply_cached_residual(self, hidden_states):
+            self.skip_count += 1
+
+            if self.offload_cpu:
+                return hidden_states + self.previous_residual.to(hidden_states.device)
+            else:
+                return hidden_states + self.previous_residual
+    
+    class EnhanceAVideoParameters():
+        def __init__(self):
+            self.enabled = False
+            self.weight = 0.0
+
+            self.is_current_step_enabled = False
+
+            self.count = 0
+            self.num_steps = 0
+            self.skip_start_steps = 0
+            self.skip_end_steps = 0
+        
+        def initialize(self, is_enabled, weight, skip_start_steps, skip_end_steps, num_steps):
+            self.enabled = is_enabled
+            self.weight = weight
+
+            self.is_current_step_enabled = False
+
+            self.count = 0
+            self.num_steps = num_steps
+            self.skip_start_steps = max(0, skip_start_steps)
+            self.skip_end_steps = max(0, skip_end_steps)
+        
+        def disable(self):
+            self.enabled = False
+            self.is_current_step_enabled = False
+        
+        def update(self):
+            if self.enabled and self.count >= self.skip_start_steps and self.count < (self.num_steps - self.skip_end_steps):
+                self.is_current_step_enabled = True
+            else:
+                self.is_current_step_enabled = False
+
+            self.count += 1
     
     def _set_gradient_checkpointing(self, module, value=False):
         if hasattr(module, "gradient_checkpointing"):
@@ -1053,120 +1241,145 @@ class HunyuanTransformer3DModel(ModelMixin, ConfigMixin):
         if skips_cache_size <= 0:
             skips_cache_size = self.config.num_layers
         
-        for layer, block in enumerate(self.blocks):
-            if layer > self.config.num_layers // 2:
-                if skips_cache_size == 1:
-                    skip_cpu = skips.pop()
-                    skip = skip_cpu.to(hidden_states.device)
-                else:
-                    if len(skips) == 0:
-                        skips_cache_block = skips_cpu_cache.pop()
-                        for si in range(len(skips_cache_block)):
-                            skips.append(skips_cache_block[si].to(hidden_states.device))
-                    skip = skips.pop()
+        # Enhance-A-Video
+        if self.enhance_a_video.enabled:
+            self.enhance_a_video.update()
+        
+        # TeaCache
+        if self.tea_cache.enabled:
+            self.tea_cache.update(self.blocks[0], temb, hidden_states, video_length, height, width)
+        
+        if self.tea_cache.should_use_cached_residual():
+            hidden_states = self.tea_cache.apply_cached_residual(hidden_states)
+        else:
+            # Blocks
+            for layer, block in enumerate(self.blocks):
+                if layer > self.config.num_layers // 2:
+                    if skips_cache_size == 1:
+                        skip_cpu = skips.pop()
+                        skip = skip_cpu.to(hidden_states.device)
+                    else:
+                        if len(skips) == 0:
+                            skips_cache_block = skips_cpu_cache.pop()
+                            for si in range(len(skips_cache_block)):
+                                skips.append(skips_cache_block[si].to(hidden_states.device))
+                        skip = skips.pop()
 
-                if self.training and self.gradient_checkpointing:
+                    if self.training and self.gradient_checkpointing:
 
-                    def create_custom_forward(module, return_dict=None):
-                        def custom_forward(*inputs):
-                            if return_dict is not None:
-                                return module(*inputs, return_dict=return_dict)
-                            else:
-                                return module(*inputs)
+                        def create_custom_forward(module, return_dict=None):
+                            def custom_forward(*inputs):
+                                if return_dict is not None:
+                                    return module(*inputs, return_dict=return_dict)
+                                else:
+                                    return module(*inputs)
 
-                        return custom_forward
+                            return custom_forward
 
-                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                    args = {
-                        "basic": [video_length, height, width, clip_encoder_hidden_states],
-                        "hybrid_attention": [video_length, height, width, clip_encoder_hidden_states],
-                        "motionmodule": [video_length, height, width],
-                        "global_motionmodule": [video_length, height, width],
-                    }[self.basic_block_type]
-                    
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
-                        hidden_states,
-                        encoder_hidden_states,
-                        temb,
-                        image_rotary_emb,
-                        skip,
-                        *args,
-                        **ckpt_kwargs,
-                    )
-                else:
-                    kwargs = {
-                        "basic": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
-                        "hybrid_attention": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
-                        "motionmodule": {"num_frames":video_length, "height":height, "width":width},
-                        "global_motionmodule": {"num_frames":video_length, "height":height, "width":width},
-                    }[self.basic_block_type]
-                    hidden_states = block(
-                        hidden_states,
-                        temb=temb,
-                        encoder_hidden_states=encoder_hidden_states,
-                        image_rotary_emb=image_rotary_emb,  
-                        skip=skip,                  
-                        **kwargs
-                    )  # (N, L, D)
-            else:
-                if self.training and self.gradient_checkpointing:
-
-                    def create_custom_forward(module, return_dict=None):
-                        def custom_forward(*inputs):
-                            if return_dict is not None:
-                                return module(*inputs, return_dict=return_dict)
-                            else:
-                                return module(*inputs)
-
-                        return custom_forward
-                    
-                    ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                    args = {
-                        "basic": [None, video_length, height, width, clip_encoder_hidden_states],
-                        "hybrid_attention": [None, video_length, height, width, clip_encoder_hidden_states],
-                        "motionmodule": [None, video_length, height, width],
-                        "global_motionmodule": [None, video_length, height, width],
-                    }[self.basic_block_type]
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
-                        hidden_states,
-                        encoder_hidden_states,
-                        temb,
-                        image_rotary_emb, 
-                        *args,
-                        **ckpt_kwargs,
-                    )
-                else:
-                    kwargs = {
-                        "basic": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
-                        "hybrid_attention": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
-                        "motionmodule": {"num_frames":video_length, "height":height, "width":width},
-                        "global_motionmodule": {"num_frames":video_length, "height":height, "width":width},
-                    }[self.basic_block_type]
-                    hidden_states = block(
-                        hidden_states,
-                        temb=temb,
-                        encoder_hidden_states=encoder_hidden_states,
-                        image_rotary_emb=image_rotary_emb,  
-                        **kwargs
-                    )  # (N, L, D)
-
-            if layer < (self.config.num_layers // 2 - 1):
-                if skips_cache_size == 1:
-                    skips.append(hidden_states.to("cpu"))
-                else:
-                    skips.append(hidden_states)
-                    if len(skips) >= skips_cache_size:
-                        skips_cache_block = []
-                        for si in range(len(skips)):
-                            skips_cache_block.append(skips[si].to("cpu"))
+                        ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                        args = {
+                            "basic": [video_length, height, width, clip_encoder_hidden_states],
+                            "hybrid_attention": [video_length, height, width, clip_encoder_hidden_states],
+                            "motionmodule": [video_length, height, width],
+                            "global_motionmodule": [video_length, height, width],
+                        }[self.basic_block_type]
                         
-                        skips = []
-                        skips_cpu_cache.append(skips_cache_block)
+                        hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(block),
+                            hidden_states,
+                            encoder_hidden_states,
+                            temb,
+                            image_rotary_emb,
+                            skip,
+                            *args,
+                            **ckpt_kwargs,
+                        )
+                    else:
+                        kwargs = {
+                            "basic": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
+                            "hybrid_attention": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
+                            "motionmodule": {"num_frames":video_length, "height":height, "width":width},
+                            "global_motionmodule": {"num_frames":video_length, "height":height, "width":width},
+                        }[self.basic_block_type]
+                        hidden_states = block(
+                            hidden_states,
+                            temb=temb,
+                            encoder_hidden_states=encoder_hidden_states,
+                            image_rotary_emb=image_rotary_emb,  
+                            skip=skip,                  
 
-        # final layer
-        hidden_states = self.norm_out(hidden_states, temb.to(torch.float32))
+                            enhance_a_video_enabled=self.enhance_a_video.is_current_step_enabled,
+                            enhance_a_video_weight=self.enhance_a_video.weight,
+
+                            **kwargs
+                        )  # (N, L, D)
+                else:
+                    if self.training and self.gradient_checkpointing:
+
+                        def create_custom_forward(module, return_dict=None):
+                            def custom_forward(*inputs):
+                                if return_dict is not None:
+                                    return module(*inputs, return_dict=return_dict)
+                                else:
+                                    return module(*inputs)
+
+                            return custom_forward
+                        
+                        ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                        args = {
+                            "basic": [None, video_length, height, width, clip_encoder_hidden_states],
+                            "hybrid_attention": [None, video_length, height, width, clip_encoder_hidden_states],
+                            "motionmodule": [None, video_length, height, width],
+                            "global_motionmodule": [None, video_length, height, width],
+                        }[self.basic_block_type]
+                        hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(block),
+                            hidden_states,
+                            encoder_hidden_states,
+                            temb,
+                            image_rotary_emb, 
+                            *args,
+                            **ckpt_kwargs,
+                        )
+                    else:
+                        kwargs = {
+                            "basic": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
+                            "hybrid_attention": {"num_frames":video_length, "height":height, "width":width, "clip_encoder_hidden_states":clip_encoder_hidden_states},
+                            "motionmodule": {"num_frames":video_length, "height":height, "width":width},
+                            "global_motionmodule": {"num_frames":video_length, "height":height, "width":width},
+                        }[self.basic_block_type]
+                        hidden_states = block(
+                            hidden_states,
+                            temb=temb,
+                            encoder_hidden_states=encoder_hidden_states,
+                            image_rotary_emb=image_rotary_emb,  
+
+                            enhance_a_video_enabled=self.enhance_a_video.is_current_step_enabled,
+                            enhance_a_video_weight=self.enhance_a_video.weight,
+                            
+                            **kwargs
+                        )  # (N, L, D)
+
+                if layer < (self.config.num_layers // 2 - 1):
+                    if skips_cache_size == 1:
+                        skips.append(hidden_states.to("cpu"))
+                    else:
+                        skips.append(hidden_states)
+                        if len(skips) >= skips_cache_size:
+                            skips_cache_block = []
+                            for si in range(len(skips)):
+                                skips_cache_block.append(skips[si].to("cpu"))
+                            
+                            skips = []
+                            skips_cpu_cache.append(skips_cache_block)
+
+            # final layer
+            hidden_states = self.norm_out(hidden_states, temb.to(torch.float32))
+
+        # update TeaCache
+        if self.tea_cache.should_update_residual():
+            self.tea_cache.update_residual(hidden_states)
+
         hidden_states = self.proj_out(hidden_states)
         # (N, L, patch_size ** 2 * out_channels)
 
@@ -1217,11 +1430,11 @@ class HunyuanTransformer3DModel(ModelMixin, ConfigMixin):
                 model.state_dict()['proj_out.bias'][:state_dict['proj_out.bias'].size()[0]] = state_dict['proj_out.bias']
                 state_dict['proj_out.bias'] = model.state_dict()['proj_out.bias']
 
-        tmp_state_dict = {} 
-        for key in state_dict:
-            if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
-                tmp_state_dict[key] = state_dict[key]
-        state_dict = tmp_state_dict
+        # tmp_state_dict = {} 
+        # for key in state_dict:
+        #     if key in model.state_dict().keys() and model.state_dict()[key].size() == state_dict[key].size():
+        #         tmp_state_dict[key] = state_dict[key]
+        # state_dict = tmp_state_dict
 
         m, u = model.load_state_dict(state_dict, strict=False)
         # print(f"### missing keys: {len(m)}; \n### unexpected keys: {len(u)};")

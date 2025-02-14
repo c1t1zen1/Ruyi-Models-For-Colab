@@ -49,6 +49,10 @@ model_path          = f"models/{model_name}"    # (Down)load mode in this path
 auto_download       = True                      # Automatically download the model if the pipeline creation fails
 auto_update         = True                      # If auto_download is enabled, check for updates and update the model if necessary
 
+# FP8 settings
+fp8_quant_mode      = "none"    # Choose in ["none", "lite", "strong", "extreme"]. GPU memory decreases depending on the modes: bf16 default > fp8 lite > fp8 strong > fp8 extreme.
+fp8_data_type       = "auto"    # Choose in ["auto", "fp8_e5m2", "fp8_e4m3fn"]. The "extreme" mode with "fp8_e5m2" is not recommended for achieving good quality.
+
 # LoRA settings
 lora_path           = None
 lora_weight         = 1.0
@@ -56,6 +60,19 @@ lora_weight         = 1.0
 # Other settings
 weight_dtype = torch.bfloat16
 device = torch.device("cuda")
+
+# TeaCache settings
+tea_cache_enabled                  = False
+tea_cache_threshold                = 0.10   # A smaller threshold results in fewer cached steps. 0.10 caches 6 ~ 8 steps, 0.15 caches 10 ~ 12 steps normally.
+tea_cache_skip_start_steps         = 3      # First n steps do not use TeaCache, should be >= 1
+tea_cache_skip_end_steps           = 1      # Last n steps do not use TeaCache, should be >= 1
+tea_cache_offload_cpu              = False  # Offload TeaCache tensors to cpu, which could save some GPU memory
+
+# Enhance-A-Video settings
+enhance_a_video_enabled            = False
+enhance_a_video_weight             = 1.0    # Should be smaller than 10. For smaller video length and lower resolution, should be smaller than 5.
+enhance_a_video_skip_start_steps   = 0      # First n steps do not use Enhance-A-Video, should be >= 0
+enhance_a_video_skip_end_steps     = 0      # Last n steps do not use Enhance-A-Video, should be >= 0
 
 
 def get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction):
@@ -93,7 +110,7 @@ def get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction):
     }
 
 
-def try_setup_pipeline(model_path, weight_dtype, config):
+def try_setup_pipeline(model_path, weight_dtype, config, fp8_quant_mode, fp8_data_type):
     try:
         # Get Vae
         vae = AutoencoderKLMagvit.from_pretrained(
@@ -110,6 +127,30 @@ def try_setup_pipeline(model_path, weight_dtype, config):
             transformer_additional_kwargs=transformer_additional_kwargs
         ).to(weight_dtype)
         print("Transformer loaded ...")
+
+        # Transformer to fp8
+        if fp8_quant_mode != 'none':
+            count_f8 =0
+            fp8_type = torch.float8_e5m2 if fp8_data_type == 'fp8_e5m2' else torch.float8_e4m3fn
+            if fp8_quant_mode != 'extreme':
+
+                shape_size = 2816 ** 2
+                if fp8_quant_mode == 'strong': shape_size -= 1
+
+                for module in transformer.modules():
+                    if module.__class__.__name__ in ["Linear"]:
+                        x,y = module.weight.shape
+                        if x * y > shape_size:
+                            module.to(fp8_type)
+                            count_f8 += 1
+            else:
+                for module in transformer.modules():
+                    if len(list(module.modules())) == 1 and list(module.named_parameters()):
+                        if module.__class__.__name__ not in ["Embedding", 'LayerNorm', 'Conv2d', 'NonDynamicallyQuantizableLinear']:
+                            module.to(fp8_type)
+                            count_f8 += 1
+
+            print (f'FP8: {count_f8} layers converted to {fp8_type}')
 
         # Load Clip
         clip_image_encoder = CLIPVisionModelWithProjection.from_pretrained(
@@ -162,14 +203,14 @@ if auto_download and auto_update:
     snapshot_download(repo_id=repo_id, local_dir=model_path)
 
 # Init model
-pipeline = try_setup_pipeline(model_path, weight_dtype, config)
+pipeline = try_setup_pipeline(model_path, weight_dtype, config, fp8_quant_mode, fp8_data_type)
 if pipeline is None and auto_download:
     print(f"Downloading {model_name} ...")
 
     # Download the model
     snapshot_download(repo_id=repo_id, local_dir=model_path)
 
-    pipeline = try_setup_pipeline(model_path, weight_dtype, config)
+    pipeline = try_setup_pipeline(model_path, weight_dtype, config, fp8_quant_mode, fp8_data_type)
 
 if pipeline is None:
     message = (f"[Load Model Failed] "
@@ -222,7 +263,14 @@ generator= torch.Generator(device).manual_seed(seed)
 # Load control embeddings
 embeddings = get_control_embeddings(pipeline, aspect_ratio, motion, camera_direction)
 
-with torch.no_grad():
+# Initialize TeaCache
+pipeline.transformer.tea_cache.initialize(tea_cache_enabled, tea_cache_threshold, tea_cache_skip_start_steps, tea_cache_skip_end_steps, steps, tea_cache_offload_cpu)
+
+# Initialize Enhance-A-Video
+pipeline.transformer.enhance_a_video.initialize(enhance_a_video_enabled, enhance_a_video_weight, enhance_a_video_skip_start_steps, enhance_a_video_skip_end_steps, steps)
+
+# Generate video
+with torch.no_grad(), torch.autocast(device_type=device.type, dtype=pipeline.transformer.dtype):
     video_length = int(video_length // pipeline.vae.mini_batch_encoder * pipeline.vae.mini_batch_encoder) if video_length != 1 else 1
     input_video, input_video_mask, clip_image = get_image_to_video_latent(start_img, end_img, video_length=video_length, sample_size=(height, width))
 
@@ -254,6 +302,10 @@ with torch.no_grad():
 
     for _lora_path, _lora_weight in zip(loras.get("models", []), loras.get("weights", [])):
         pipeline = unmerge_lora(pipeline, _lora_path, _lora_weight)
+
+# Log information
+if tea_cache_enabled:
+    print("TeaCache cached steps:", pipeline.transformer.tea_cache.skip_count)
 
 # Save the video
 output_folder = os.path.dirname(output_video_path)

@@ -4,6 +4,14 @@
 
 Ruyi 是一款图生视频模型，能够生成 **768 分辨率、每秒 24 帧总计 5 秒 120 帧的影视级视频**，支持**镜头控制**与**运动幅度控制**，使用 **RTX 3090** 或 **RTX 4090** 可**无精度损失**地生成 512 分辨率、120 帧（768分辨率、~72帧）的视频。
 
+## 更新说明
+
+2025年1月14日：[TeaCache](https://github.com/ali-vilab/TeaCache) 和 [Enhance-A-Video](https://github.com/NUS-HPC-AI-Lab/Enhance-A-Video) 已作为 ComfyUI 的节点添加，提供更快的生成速度和更高的视频质量。只需在 Sampler 节点之前链接这些节点即可使用。
+
+2025年1月6日: 为ComfyUI加入了FP8的支持，有三种fp8的模式，显存消耗：bf16 default > fp8 lite > fp8 strong > fp8 extreme。
+
+2024年12月24日: 更新了transformer模型以解决3:4和4:5比例的视频会出现黑杠的问题。
+
 ## 安装方法
 
 克隆本仓库并安装所需的依赖。
