@@ -1,5 +1,5 @@
 
-<a href="https://colab.research.google.com/github/c1t1zen1/Ruyi-Models/blob/main/Ruyi-mini_7b.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" width="200px"/></a> 
+<a href="https://colab.research.google.com/github/c1t1zen1/Ruyi-Models-For-Colab/blob/main/Ruyi_mini_7b.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab" width="200px"/></a> 
 # Added Colab Notebook .ipynb file to use images on Google Drive
 
 # Ruyi-Models
